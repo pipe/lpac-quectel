@@ -8,6 +8,7 @@
 #include <sys/ioctl.h>
 #include <fcntl.h>
 #include <stdbool.h>
+#include <termios.h>
 
 #include <euicc/interface.h>
 #include <euicc/hexutil.h>
@@ -96,17 +97,40 @@ static int at_expect(char **response, const char *expected)
 }
 
 static int writeString(char * st){
+    int len;
+    int w;
+    char *cp;
+    char c;
+    len = strlen(st);
+    cp = st;
+
     if (at_debug >0)
     {
         write(1,">",1);
         write(1,st,strlen(st));
     }
-    write(uart_fd,st,strlen(st));
+    while (len > 0)
+    {
+	c = 0x7f & *cp;
+        if (at_debug >0)
+    	{
+            write(1,&c,1);
+        }
+        w = write(uart_fd,&c,1);
+	if (w < 0){
+	   return -1;
+        }
+	len -= w;
+	cp += w;
+	usleep(10000);
+    }
 }
 static int apdu_interface_connect(struct euicc_ctx *ctx)
 {
     const char *device;
-    
+    struct termios tty;
+    int mcs;
+     
     logic_channel = 0;
     
     if (getenv("AT_DEBUG"))
@@ -123,6 +147,27 @@ static int apdu_interface_connect(struct euicc_ctx *ctx)
         return -1;
     }
     
+    tcgetattr(uart_fd,&tty);
+    cfsetospeed(&tty,B115200);
+    cfsetispeed(&tty,B115200);
+    tty.c_cflag = (tty.c_cflag & ~CSIZE) | CS8;
+    tty.c_iflag = IGNBRK;
+    tty.c_lflag =0;
+    tty.c_oflag =0;
+    tty.c_cflag |= CLOCAL | CREAD;
+    tty.c_cc[VMIN]=1;
+    tty.c_cc[VTIME]=5;
+    tty.c_iflag &= ~(IXON|IXOFF|IXANY);
+    tty.c_cflag &=~(PARENB | PARODD);
+    tty.c_cflag &= ~CSTOPB;
+    tcsetattr(uart_fd,TCSANOW,&tty);
+    /* ioctl(uart_fd,TIOCMODG,&mcs);
+    mcs |= TIOCM_RTS;
+    ioctl(uart_fd,TIOCMODS,&mcs);
+    */
+
+
+
     writeString("AT+CMEE=2\r\n");
     if (at_expect(NULL, NULL))
     {
@@ -189,7 +234,6 @@ static int apdu_interface_transmit(struct euicc_ctx *ctx, uint8_t **rx, uint32_t
     wp+=snprintf(wp,mxal-(wp-wout), "\"\r\n");
     writeString(wout);
     usleep(10000);
-    free(wout);
     if (at_expect(&response, "+CGLA: "))
     {
         goto err;
@@ -233,6 +277,7 @@ err:
     *rx = NULL;
     *rx_len = 0;
 exit:
+    free(wout);
     free(response);
     return fret;
 }
